@@ -1,0 +1,369 @@
+---
+title: "Projet Modélisation Prédictive"
+author: "Mohamed Amine GRINI, Samuel MOLANO, Marcos LAHOZ"
+date: "2025-03-08"
+output:
+  pdf_document: 
+    toc: true
+---
+
+### **Installation de packages et de librairies**
+
+```{r eval=FALSE}
+install.packages("forecast")
+install.packages("mgcv")
+install.packages("tidyverse")
+install.packages("lubridate")
+install.packages("ranger")
+install.packages("rpart")
+install.packages("rpart.plot")
+install.packages("randomForest")
+install.packages("readr")
+install.packages("tinytex")
+install.packages("mixtools")
+install.packages("distr")
+tinytex::install_tinytex()  # Installs LaTeX for PDF generation)
+
+```
+
+```{r eval=FALSE}
+library(tidyverse)
+library(lubridate)
+library(forecast)
+library(ranger)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(readr)
+library(distr)
+library(mgcv)
+```
+
+# Analyse descriptive des données
+
+```{r eval=FALSE}
+source("score.R")
+Data0 <- read_delim("train.csv", delim=",")
+Data1<- read_delim("test.csv", delim=",")
+attach(Data0)
+Data0$Time <- as.numeric(Data0$Date)
+Data1$Time <- as.numeric(Data1$Date)
+
+
+sel_a <- which(Data0$Year<=2021)
+sel_b <- which(Data0$Year>2021)
+
+```
+
+```{r eval=FALSE}
+names(Data1)
+```
+
+```{r eval=FALSE}
+summary(Data0)
+
+```
+
+```{r eval=FALSE}
+Data0=Data0[order(Data0$Date),]
+Data1=Data1[order(Data1$Date),]
+print(range(Data0$Date))
+print(range(Data1$Date))
+```
+
+```{r eval=FALSE}
+head(Data0[, c("Date", "WeekDays")])
+```
+
+```{r eval=FALSE}
+weekdays(head(Data0$Date, 7))
+names(Data0)
+names(Data1)
+```
+
+```{r eval=FALSE}
+col =c('blue', 'blue', 'blue')
+
+plot(Data0$Date, Data0$Load, type='l', col=col[1])
+```
+
+```{r eval=FALSE}
+plot(Data0$Date, Data0$Solar_power, type='l', col=col[2])
+plot(Data0$Date, Data0$Wind_power, type='l', col=col[3])
+plot(Data0$Date, Data0$Load, type='l', ylim=range(Data0$Solar_power, Data0$Load), col=col[1])
+lines(Data0$Date, Data0$Wind_power, col='red')
+lines(Data0$Date, Data0$Solar_power, col=col[2])
+
+```
+
+# **GAM Avancé**
+
+```{r eval=FALSE}
+Nblock<-10
+borne_block<-seq(1, nrow(Data0), length=Nblock+1)%>%floor
+block_list<-list()
+l<-length(borne_block)
+for(i in c(2:(l-1)))
+{
+  block_list[[i-1]] <- c(borne_block[i-1]:(borne_block[i]-1))
+}
+block_list[[l-1]]<-c(borne_block[l-1]:(borne_block[l]))
+
+
+
+blockRMSE<-function(equation, block)
+{
+  g<- gam(as.formula(equation), data=Data0[-block,])
+  forecast<-predict(g, newdata=Data0[block,])
+  return(forecast)
+}
+fitmod <- function(eq, block)
+{
+  mod <- lm(eq, data=Data0[-block,])
+  mod.cvpred <- predict(mod, newdata=Data0[block,])
+  return(mod.cvpred)
+}
+```
+
+### **Selection de variables avec ANOVA**
+
+```{r eval=FALSE}
+equation <- "Net_demand ~ Load.1:as.factor(WeekDays) + BH + Christmas_break + Summer_break + DLS + s(Temp) + s(Temp_s99_max, Temp_s99_min)+ s(Load.7) + s(Time, k=7) + s(toy, k =30, bs = 'cc', by=as.factor(WeekDays))+ s(Temp, Time, k=20)"
+#Block_residuals<-lapply(block_list, blockRMSE, equation=equation)%>%unlist
+gam<-gam(equation%>%as.formula, data=Data0[sel_a,])
+sqrt(gam$gcv.ubre)
+summary(gam)
+gam.forecast <- predict(gam, newdata=Data0[sel_b,]) 
+rmse(Data0[sel_b,]$Net_demand, gam.forecast)
+
+```
+
+```{r eval=FALSE}
+plot.gam(gam)
+```
+
+```{r}
+library(qgam)
+gam9<-qgam(equation%>%as.formula, data=Data0[sel_a,], qu=0.4)
+gam9.forecast <- predict(gam9, newdata=Data1) 
+rmse(Data0[sel_b,]$Net_demand, gam9.forecast)
+```
+
+```{r eval=FALSE}
+pb_gam9 <- pinball_loss(y=Data0$Net_demand[sel_b], gam9.forecast, quant=0.8, output.vect=FALSE)
+pb_gam9
+```
+
+# **Random Forest**
+
+```{r eval=FALSE}
+equation <- Net_demand ~  Time + toy + Temp + Net_demand.1 + Net_demand.7 + Temp_s99 + BH + Temp_s95_max + Temp_s99_max + Summer_break  + Christmas_break +
+  Temp_s95_min +Temp_s99_min + DLS
+
+set.seed(50)
+rf <- ranger::ranger(equation, data=Data0[sel_a,], importance =  'permutation', quantreg = TRUE)
+rf$r.squared
+
+
+rf.forecast <- predict(rf, data=Data0[sel_b,], quantiles = 0.8, type = "quantiles")$predictions
+
+
+```
+
+```{r eval=FALSE}
+pb_rf<- pinball_loss(y=Data0$Net_demand[sel_b], rf.forecast, quant=0.8, output.vect=FALSE)
+pb_rf
+```
+
+# **Regression Quantile**
+
+```{r}
+library("quantreg")
+rq <- rq(equation, data = Data0[sel_a, ], tau=0.5)
+summary(rq)
+
+rq.forecast <- predict(rq, newdata=Data0[sel_b,])
+
+rmse(y=Data0$Net_demand[sel_b], ychap=rq.forecast)
+```
+
+# **Selection d'experts avec ARIMA**
+
+```{r eval=FALSE}
+# Load necessary libraries
+
+time_series <-Data0[sel_a,]$Net_demand
+
+# Fit ARIMA model
+arima_model <- auto.arima(time_series)
+
+
+# Compute error metrics (MAE)
+mae_arima<-mae(Data0$Net_demand[sel_b], arima_forecast)
+mae_gam <- mae(Data0$Net_demand[sel_b], gam.forecast)
+mae_gam9 <- mae(Data0$Net_demand[sel_b],gam9.forecast )
+mae_rf <- mae(Data0$Net_demand[sel_b], rf.forecast)
+
+# Select experts based on performance
+expert_errors <- data.frame(Model = c("gam", "qgam", "rf"),
+                            MAE = c(mae_gam, mae_gam9, mae_rf))
+print(expert_errors)
+
+# Select models with lower MAE than ARIMA
+selected_experts <- expert_errors[expert_errors$MAE < mae_arima, ]
+print("Selected Experts:")
+print(selected_experts)
+
+
+```
+
+# **Aggregation d'experts(RF/GAM)**
+
+```{r eval=FALSE}
+experts <- cbind(gam9.forecast,rf.forecast, gam.forecast,rq.forecast)%>%as.matrix 
+nom_exp <- c("qgam","rf", "gam","rq")
+colnames(experts) <- nom_exp
+rmse_exp <- apply(experts, 2, rmse, y=Data0[sel_b,]$Net_demand) 
+cumsum_exp <- apply(Data0[sel_b,]$Net_demand-experts, 2, cumsum)
+par(mfrow=c(1,1)) 
+agg <- mixture(Y = Data1$Net_demand, experts = experts, loss.gradient=TRUE)
+#summary(agg) 
+####PLOT EXPERT AGGREGATION 
+#plot(agg) 
+or <- oracle(Y=Data0[sel_b,]$Net_demand, experts) 
+par(mfrow=c(1,1)) 
+rmse(agg$prediction, Data0[sel_b,]$Net_demand)
+```
+
+```{r}
+pb_agg<- pinball_loss(y=Data0$Net_demand[sel_b], agg$prediction, quant=0.8, output.vect=FALSE)
+pb_agg
+```
+
+# **Online Learning**
+
+```{r eval=FALSE}
+equation <- Net_demand~s(as.numeric(Date),k=3, bs='cr') + s(toy,k=30, bs='cc') + s(Temp,k=10, bs='cr') + 
+  s(Load.1, bs='cr', by= as.factor(WeekDays))+ s(Load.7, bs='cr')  + as.factor(WeekDays) +BH 
+
+gam9<-gam(equation%>%as.formula, data=Data0[sel_a,])
+gam9.forecast <- predict(gam9, newdata=Data0[sel_b,])
+
+X <- predict(gam9, newdata=Data0, type='terms')
+###scaling columns
+for (j in 1:ncol(X))
+  X[,j] <- (X[,j]-mean(X[,j])) / sd(X[,j])
+X <- cbind(X,1)
+d <- ncol(X)
+
+y <- Data0$Net_demand
+
+# static 
+ssm <- viking::statespace(X, y)
+ssm
+ssm$kalman_params
+gam9.kalman.static <- ssm$pred_mean%>%tail(length(sel_b))
+
+rmse(y=Data0$Net_demand[sel_b], ychap=gam9.forecast)
+rmse(y=Data0$Net_demand[sel_b], ychap=gam9.kalman.static)
+
+
+sig <- sd(Data0$Net_demand[sel_a]-ssm$pred_mean[sel_a])
+quant <- qnorm(0.8, mean= gam9.kalman.static, sd= sig)
+pinball_loss(y=Data0$Net_demand[sel_b], quant, quant=0.8, output.vect=FALSE)
+
+
+sig <- ssm$pred_sd%>%tail(length(sel_b))*sd(Data0$Net_demand[sel_a]-ssm$pred_mean[sel_a])
+quant <- qnorm(0.8, mean= gam9.kalman.static, sd= sig)
+pinball_loss(y=Data0$Net_demand[sel_b], quant, quant=0.8, output.vect=FALSE)
+
+
+#sd(Data0$Load[sel_b]-gam9.kalman.static)
+#ssm$kf
+#ssm$pred_sd*sd(Data0$Load[sel_a]-ssm$pred_mean%>%head(length(sel_a)))
+
+
+
+# dynamic
+# using iterative grid search
+ssm_dyn <- viking::select_Kalman_variances(ssm, X[sel_a, ], y[sel_a], q_list = 2^(-30:0), p1 = 1, 
+                                           ncores = 1)
+#saveRDS(ssm_dyn, "Results/ssm_dyn.RDS")
+ssm_dyn <- readRDS("Results/ssm_dyn.RDS")
+ssm_dyn <- predict(ssm_dyn, X, y, type='model', compute_smooth = TRUE)
+gam9.kalman.Dyn <- ssm_dyn$pred_mean%>%tail(length(sel_b))
+rmse(y=Data0$Net_demand[sel_b], ychap=gam9.kalman.Dyn)
+ssm_dyn$kalman_params$Q
+
+quant <- qnorm(0.8, mean= gam9.kalman.Dyn, sd= ssm_dyn$pred_sd%>%tail(length(sel_b)))
+pinball_loss(y=Data0$Net_demand[sel_b], quant, quant=0.8, output.vect=FALSE)
+
+
+plot(ssm_dyn, pause=F, window_size = 14, date = Data0$Date, sel = sel_b)
+
+
+# using expectation-maximization
+ssm_em <- viking::select_Kalman_variances(ssm, X[sel_a,], y[sel_a], method = 'em', n_iter = 10^3,
+                                          Q_init = diag(d), verbose = 10, mode_diag = T)
+ssm_em <- predict(ssm_em, X, y, type='model', compute_smooth = TRUE)
+
+#saveRDS(ssm_em, "Results/ssm_em.RDS")
+ssm_em <-readRDS("Results/ssm_em.RDS")
+
+gam9.kalman.Dyn.em <- ssm_em$pred_mean%>%tail(length(sel_b))
+ssm_em$kalman_params$Q
+
+plot(ssm_em, pause=F, window_size = 14, date = Data0$Date, sel = sel_b)
+rmse(y=Data0$Net_demand[sel_b], ychap=gam9.kalman.Dyn.em)
+
+quant <- qnorm(0.8, mean= gam9.kalman.Dyn.em, sd= ssm_em$pred_sd%>%tail(length(sel_b)))
+pinball_loss(y=Data0$Net_demand[sel_b], quant, quant=0.8, output.vect=FALSE)
+
+
+par(mfrow=c(1,1))
+plot(Data0$Date[sel_b], Data0$Net_demand[sel_b], type='l')
+lines(Data0$Date[sel_b], gam9.forecast, col='red')
+lines(Data0$Date[sel_b], gam9.kalman.static, col='blue')
+lines(Data0$Date[sel_b], gam9.kalman.Dyn, col='green')
+lines(Data0$Date[sel_b], gam9.kalman.Dyn.em, col='purple')
+
+
+
+r <- range(cumsum(Data0$Net_demand[sel_b]-gam9.kalman.Dyn), cumsum(Data0$Net_demand[sel_b]- gam9.forecast))
+plot(Data0$Date[sel_b], cumsum(Data0$Net_demand[sel_b]- gam9.forecast), type='l', ylim=r)
+lines(Data0$Date[sel_b], cumsum(Data0$Net_demand[sel_b]-gam9.kalman.static), col='blue')
+lines(Data0$Date[sel_b], cumsum(Data0$Net_demand[sel_b]-gam9.kalman.Dyn), col='green')
+lines(Data0$Date[sel_b], cumsum(Data0$Net_demand[sel_b]-gam9.kalman.Dyn.em), col='purple')
+
+
+
+
+ssm_dyn2 <- readRDS("Results/ssm_dyn.RDS")
+ssm_dyn2$kalman_params$Q <- ssm_dyn2$kalman_params$Q*10
+ssm_dyn2 <- predict(ssm_dyn2, X, y, type='model', compute_smooth = TRUE)
+gam9.kalman.Dyn2 <- ssm_dyn2$pred_mean%>%tail(length(sel_b))
+rmse(y=Data0$Net_demand[sel_b], ychap=gam9.kalman.Dyn2)
+
+quant <- qnorm(0.8, mean= gam9.kalman.Dyn2, sd= ssm_dyn2$pred_sd%>%tail(length(sel_b)))
+pinball_loss(y=Data0$Net_demand[sel_b], quant, quant=0.8, output.vect=FALSE)
+
+
+par(mfrow=c(1,1))
+r <- range(cumsum(Data0$Net_demand[sel_b]-gam9.kalman.Dyn), cumsum(Data0$Net_demand[sel_b]- gam9.forecast))
+plot(Data0$Date[sel_b], cumsum(Data0$Net_demand[sel_b]- gam9.forecast), type='l', ylim=r)
+lines(Data0$Date[sel_b], cumsum(Data0$Net_demand[sel_b]-gam9.kalman.static), col='blue')
+lines(Data0$Date[sel_b], cumsum(Data0$Net_demand[sel_b]-gam9.kalman.Dyn), col='green')
+lines(Data0$Date[sel_b], cumsum(Data0$Net_demand[sel_b]-gam9.kalman.Dyn.em), col='purple')
+lines(Data0$Date[sel_b], cumsum(Data0$Net_demand[sel_b]-gam9.kalman.Dyn2), col='orange')
+
+
+```
+
+# **Submit**
+
+```{r eval=FALSE}
+submit <- read_delim( file="sample_submission.csv", delim=",")
+submit$Net_demand <- agg$prediction
+write.table(submit, file="submission_agg.csv", quote=F, sep=",", dec='.',row.names = F)
+
+```
