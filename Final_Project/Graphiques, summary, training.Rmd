@@ -1,0 +1,333 @@
+---
+title: "Rapport_Projet_ModelPred"
+author: "Mohamed Amine GRINI, Samuel MOLANO, Marcos LAHOZ"
+date: "2025-03-09"
+output:
+  pdf_document: 
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(forecast)
+library(ranger)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(readr)
+library(distr)
+library(mgcv)
+```
+
+## Introduction
+
+Dans ce projet, nous avons considéré un jeu de données regroupant différentes variables en rapport avec la consommation énergétique en France pendant la période de 2013 à 2022. Notre but est de construire un modèle qui permet de prédire la consommation française en énergie pendant la période de 2022 à 2023 . Pour cela nous allons d'abord visualiser nos données, établir les différentes modèles qui ont abouties à faire les prédictions et enfin discuter les résultats.
+
+## Visualisation de données / Choix de variables
+
+Nos modéles s'entraînent sur les données 2013 à 2021 $( \texttt{Data0[sel_a,]})$ nous validons ensuite le modèle sur les données 2021-2022 $( \texttt{Data0[sel_b,]})$ pour enfin prédire les données test 2022-2023 $( \texttt{Data1=test.csv})$. Dans un premier temps nous avons effectué un test ANOVA sur les corrélations entre la variable cible $\texttt{Net_demand}$ et les autres variables.
+
+```{r eval=FALSE}
+library(ggplot2)
+library(reshape2)
+source("R.score.R")
+Data0 <- read_delim("data/train.csv", delim=",")
+Data1<- read_delim("data/test.csv", delim=",")
+
+attach(Data0)
+Data0$Time <- as.numeric(Data0$Date)
+Data1$Time <- as.numeric(Data1$Date)
+Data0$WeekDays <- as.factor(Data0$WeekDays)
+
+sel_a <- which(Data0$Year<=2021)
+sel_b <- which(Data0$Year>2021)
+
+sel_a1 <- which(Data0$Year<2020)
+sel_a2 <- which(Data0$Year > 2020 & Data0$Year <= 2021)
+
+
+
+```
+
+## **Plot de la net_demand par rapport à Date**
+
+```{r eval=FALSE}
+plot(Data0$Date, Data0$Net_demand, type='l', xlim=range(Data0$Date, Data1$Date))
+K <- 7
+smooth <- stats::filter(Data0$Net_demand, rep(1/K, K))
+lines(Data0$Date, smooth, col='red', lwd=2)
+```
+
+## RF: Plot mtry et Importance
+
+```{r eval=FALSE}
+set.seed(150)
+mtry_values <- seq(1, 20, by=3)
+
+pinball_losses <- numeric(length(mtry_values))
+
+for(i in 1:length(mtry_values)) {
+
+  rf <- randomForest(Net_demand ~ Load.1 + Load.7 + Temp + Temp_s95 + Temp_s99 +
+                       Temp_s95_min + Temp_s95_max + Temp_s99_min + Temp_s99_max +
+                       Wind + Wind_weighted + Nebulosity + Nebulosity_weighted + toy +
+                       WeekDays + BH_before + BH + BH_after + Year + Month + DLS +
+                       Summer_break + Christmas_break + Holiday + Holiday_zone_a +
+                       Holiday_zone_b + Holiday_zone_c + BH_Holiday +
+                       Solar_power.1 + Solar_power.7 + Wind_power.1 + Wind_power.7 +
+                       Net_demand.1 + Net_demand.7,
+                     data=Data0[sel_a,], mtry=mtry_values[i])
+  prf <- predict(rf, newdata=Data0[sel_b,], type="response")
+  pb_loss <- pinball_loss(y=Data0$Net_demand[sel_b], prf, quant=0.8)
+
+  pinball_losses[i] <- pb_loss
+}
+plot(mtry_values, pinball_losses, type="b", col="blue", 
+     xlab="mtry", ylab="Pinball Loss", main="Pinball Loss vs mtry")
+rf=randomForest(Net_demand ~Load.1 + Load.7 + Temp + Temp_s95 + Temp_s99 +
+  Temp_s95_min + Temp_s95_max + Temp_s99_min + Temp_s99_max +
+  Wind + Wind_weighted + Nebulosity + Nebulosity_weighted + toy +
+  WeekDays + BH_before + BH + BH_after + Year + Month + DLS +
+  Summer_break + Christmas_break + Holiday + Holiday_zone_a +
+  Holiday_zone_b + Holiday_zone_c + BH_Holiday +
+  Solar_power.1 + Solar_power.7 + Wind_power.1 + Wind_power.7 +
+  Net_demand.1 + Net_demand.7, data=Data0[sel_a,],mtry=7)
+prf=predict(rf, newdata=Data0[sel_b,], method='vector')
+
+rmse(prf, Data0$Net_demand[sel_b]) ## 1353
+pinball_loss(Data0$Net_demand[sel_b], prf, 0.8) ## 562
+
+
+varImpPlot(rf,cex=1.3)
+```
+
+## Plot Prediction RF
+
+```{r}
+plot_data <- data.frame(
+  Date = Data0$Date[sel_b],  # Time Index
+  Actual = Data0$Net_demand[sel_b],  # True Net Demand
+  Predicted = prf  # Predicted Net Demand (GAM + XGBoost)
+)
+
+# Plot Actual vs. Predicted Net Demand
+ggplot(plot_data, aes(x = Date)) +
+  geom_line(aes(y = Actual, color = "Actual"), size = 1) +  
+  geom_line(aes(y = Predicted, color = "Predicted"), size = 1, linetype="dashed") +  
+  labs(title = "Predicted vs Actual Net Demand",
+       x = "Date",
+       y = "Net Demand") +
+  scale_color_manual(values = c("Actual" = "blue", "Predicted" = "red")) +
+  theme_minimal()
+```
+
+## **Net_demand en fonction du mois**
+
+```{r}
+boxplot(Net_demand~Month, data=Data0, col='blue')
+```
+
+## Solar_power en fonction de toy
+
+```{r}
+plot(Data0$toy, Data0$Solar_power, pch=16, col='blue')
+```
+
+## Prediction RF sur les résidus de GAM
+
+```{r}
+equation <- Net_demand ~ s(toy,k=30, bs='cc') + s(Temp,k=10, bs='cr') + s(Net_demand.1, bs='cr',by = as.factor(WeekDays))+ s(Net_demand.7, bs='cr') +
+WeekDays + BH + s(Temp_s99_min, k = 10, bs = 'cr') + s(Temp_s99_max, k = 10, bs = 'cr') +
+s(Wind) + Christmas_break + te(Solar_power.1, Wind_power.1, by = as.factor(WeekDays), k =
+c(3,3), bs = 'cr') + te(as.numeric(Date), Nebulosity, k=c(4,10))
+gam <- gam(equation, data=Data0[sel_a1,])
+res_gam <- (Data0$Net_demand[sel_a2] - predict(gam, newdata = Data0[sel_a2,]))
+res_tab <- Data0[sel_a2, c("Temp", "toy", "Time", "WeekDays")]
+res_tab[,"Res"] <- res_gam
+rf_err <- randomForest(Res ~ Temp + toy + WeekDays + Time, data=res_tab)
+gam.predict <- predict(gam, newdata = Data0[sel_b,], method='vector')
+rf.predict <- predict(rf_err, newdata = Data0[sel_b,], method='vector')
+final_pred <- gam.predict + rf.predict
+
+rmse(final_pred, Data0$Net_demand[sel_b])
+pinball_loss(Data0$Net_demand[sel_b], gam_ridge.forecast, 0.8)
+
+
+plot_data <- data.frame(
+  Date = Data0$Date[sel_b],  # Time Index
+  Actual = Data0$Net_demand[sel_b],  # True Net Demand
+  Predicted = final_pred  # Predicted Net Demand ]
+)
+
+# Plot Actual vs. Predicted Net Demand
+ggplot(plot_data, aes(x = Date)) +
+  geom_line(aes(y = Actual, color = "Actual"), size = 1) +  
+  geom_line(aes(y = Predicted, color = "Predicted"), size = 1, linetype="dashed") +  
+  labs(title = "Predicted vs Actual Net Demand",
+       x = "Date",
+       y = "Net Demand") +
+  scale_color_manual(values = c("Actual" = "blue", "Predicted" = "red")) +
+  theme_minimal()
+```
+
+## Prediction QGAM02 et QGAM09
+
+```{r}
+library(qgam)
+equation <- Net_demand ~s(toy,k=30, bs='cc') + s(Temp,k=10, bs='cr') +
+s(Load.1, bs='cr', by= as.factor(WeekDays))+
+s(Load.7, bs='cr') + as.factor(WeekDays) +BH +
+s(Time, k = 10, bs = 'cr')
+equation_var <- ~ s(Temp,k=10, bs='cr') +
+s(Load.1) + as.factor(WeekDays) + s(toy, k = 30, bs = 'cc') +
+s(Time, k = 10, bs='cr')
+gqgam020 <- qgam(list(equation, equation_var), data=Data0[sel_a,], qu=0.2)
+gqgam02.forecast <- predict(gqgam02, newdata = Data0[sel_b,], qu = 0.2)
+gqgam08 <- qgam(list(equation, equation_var), data=Data0[sel_a,], qu=0.8)
+gqgam08.forecast <- predict(gqgam08, newdata = Data0[sel_b,], qu = 0.8)
+saveRDS(gqgam08, "qgam08.RDS")
+
+plot_data <- data.frame(
+  Date = Data0$Date[sel_b],  # Time Index
+  Actual = Data0$Net_demand[sel_b],  # True Net Demand
+  Predicted02 = gqgam02.forecast,
+  Predicted08 = gqgam08.forecast
+)
+
+# Plot Actual vs. Predicted Net Demand
+ggplot(plot_data, aes(x = Date)) +
+  geom_line(aes(y = Actual, color = "Actual"), size = 1) +  
+  geom_line(aes(y = Predicted02, color = "Predicted02"), size = 1, linetype="dashed") + 
+  geom_line(aes(y = Predicted08, color = "Predicted08"), size = 1, linetype="dashed") 
+  labs(title = "Predicted vs Actual Net Demand",
+       x = "Date",
+       y = "Net Demand") +
+  scale_color_manual(values = c("Actual" = "blue", "Predicted02" = "red","Predicted08" = "black")) +
+  theme_minimal()
+```
+
+## **Prediction GAM Ridge**
+
+```{r}
+equation <- Net_demand ~ s(as.numeric(Date),k=3, bs='cr') + s(toy,k=30, bs='cc') + s(Temp,k=10,
+bs='cr') + s(Load.1, bs='cr')+ s(Load.7, bs='cr')+
+s(Temp_s99,k=10, bs='cr') + WeekDays +BH +
+s(Wind) +
+te(as.numeric(Date), Nebulosity, k=c(4,10)) +
+s(Net_demand.1, bs='cr') + s(Net_demand.7, bs='cr')
+gam_ridge <- gam(as.formula(equation), data=Data0[sel_a,], method="REML", select=TRUE)
+saveRDS(gam_ridge, "gam_ridge.RDS")
+gam_ridge.forecast <- predict(gam_ridge, newdata = Data0[sel_b,])
+
+
+rmse(gam_ridge.forecast, Data0$Net_demand[sel_b])
+pinball_loss(Data0$Net_demand[sel_b], gam_ridge.forecast, 0.8)
+
+plot_data <- data.frame(
+  Date = Data0$Date[sel_b],  # Time Index
+  Actual = Data0$Net_demand[sel_b],  # True Net Demand
+  Predicted = gam_ridge.forecast
+)
+
+# Plot Actual vs. Predicted Net Demand
+ggplot(plot_data, aes(x = Date)) +
+  geom_line(aes(y = Actual, color = "Actual"), size = 1) +  
+  geom_line(aes(y = Predicted, color = "Predicted"), size = 1, linetype="dashed")  
+  labs(title = "Predicted vs Actual Net Demand",
+       x = "Date",
+       y = "Net Demand") +
+  scale_color_manual(values = c("Actual" = "blue", "Predicted" = "red")) +
+  theme_minimal()
+```
+
+## Prediction GAM Kalman
+
+```{r}
+equation <- Net_demand ~ s(toy,k=30, bs='cc') + s(Temp,k=10, bs='cr') +
+s(Net_demand.1, bs='cr', by = as.factor(WeekDays))+ s(Net_demand.7, bs='cr') +
+WeekDays + BH + s(Temp_s99_min, k = 10, bs = 'cr') + s(Temp_s99_max, k = 10, bs = 'cr') +
+s(Wind) + Christmas_break + te(as.numeric(Date), Nebulosity, k=c(4,10)) + s(Time, k = 10, bs ='cr') +s(Load.7, k = 5)
+gamn <- gam(equation, data = Data0[sel_a,])
+X <- predict(gamn, newdata=Data0, type='terms')
+###scaling columns
+for (j in 1:ncol(X)){
+X[,j] <- (X[,j]-mean(X[,j])) / sd(X[,j])}
+X <- cbind(X,1)
+d <- ncol(X)
+y <- Data0$Net_demand
+ssm <- viking::statespace(X, y)
+ssm_em <- viking::select_Kalman_variances(ssm, X[sel_a,], y[sel_a], method = 'em', n_iter = 100, Q_init = diag(d), verbose = 10, mode_diag = T)
+ssm_em <- predict(ssm_em, X, y, type='model', compute_smooth = TRUE)
+gamn.forecast <- ssm_em$pred_mean%>%tail(length(sel_b))
+
+rmse(gamn.forecast, Data0$Net_demand[sel_b])
+pinball_loss(Data0$Net_demand[sel_b], gamn.forecast, 0.8)
+
+plot_data <- data.frame(
+  Date = Data0$Date[sel_b],  # Time Index
+  Actual = Data0$Net_demand[sel_b],  # True Net Demand
+  Predicted = gamn.forecast
+)
+
+# Plot Actual vs. Predicted Net Demand
+ggplot(plot_data, aes(x = Date)) +
+  geom_line(aes(y = Actual, color = "Actual"), size = 1) +  
+  geom_line(aes(y = Predicted, color = "Predicted"), size = 1, linetype="dashed")  
+  labs(title = "Predicted vs Actual Net Demand",
+       x = "Date",
+       y = "Net Demand") +
+  scale_color_manual(values = c("Actual" = "blue", "Predicted" = "red")) +
+  theme_minimal()
+```
+
+## Nebulosity en fonction de la date
+
+```{r}
+plot(Data0$Date, Data0$Nebulosity, pch=16, col='black')
+```
+
+## Load en fonction de date
+
+```{r}
+plot(Data0$Date, Data0$Load, type='l', col='black')
+K <- 7
+smooth <- stats::filter(Data0$Load, rep(1/K, K))
+lines(Data0$Date, smooth, col='red', lwd=2)
+```
+
+## Cycle hebdo Load en fonction de date
+
+```{r}
+sel <- which(Data0$Month==6 & Data0$Year==2021)
+plot(Data0$Date[sel], Data0$Load[sel], type='l')
+```
+
+## (Solar+Wind)/Load
+
+## Solar + wind
+
+```{r}
+plot(Data0$Date, Data0$Solar_power+Data0$Wind_power, col='blue')
+plot(Data0$Date, Data0$Solar_power+Data0$Wind_power/Data0$Load, col='blue')
+```
+
+## Summary
+
+```{r}
+summary(gam_ridge)
+```
+
+```{r}
+summary(gamn)
+```
+
+```{r}
+summary(qgam02)
+summary(qgam08)
+
+```
