@@ -18,7 +18,7 @@ Ce projet vise à prédire la consommation énergétique en France pour la péri
 
 1. **Visualisation des Données** : Exploration et analyse des tendances.
 2. **Choix des Variables** : Sélection des variables les plus pertinentes.
-3. **Modélisation** : Comparaison de plusieurs modèles (ARIMA, forêts aléatoires, etc.).
+3. **Modélisation** : Comparaison de plusieurs modèles (GAM, forêts aléatoires, etc.).
 4. **Prédictions** : Prévision de la consommation énergétique.
 5. **Discussion** : Analyse des résultats et conclusions.
 
